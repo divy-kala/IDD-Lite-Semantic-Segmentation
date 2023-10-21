@@ -6,8 +6,9 @@ import pytorch_lightning as pl
 from pytorch_lightning import LightningDataModule
 import albumentations as A
 from albumentations.pytorch.transforms import ToTensor, ToTensorV2
-from id_dataset import IDDataset
 
+from src.datamodules.id_dataset import IDDataset
+import cv2
 
 class IDDDataModule(LightningDataModule):
     def __init__(self, train_images_path: str=None, val_images_path: str=None, test_images_path: str=None,
@@ -32,9 +33,11 @@ class IDDDataModule(LightningDataModule):
 
         train_transform_image_and_label = A.Compose(
                         transforms=[
-                                A.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.05, rotate_limit=15, p=0.5),
+                                A.ShiftScaleRotate(interpolation=cv2.INTER_NEAREST, border_mode=cv2.BORDER_CONSTANT, value=(0,0,0), mask_value=7), 
+                                # Will ShiftScaleRotate labelmap with interpolated values if interpolation != 1 (nearest)
                                 A.HorizontalFlip(p=0.5),
-                                ToTensorV2(transpose_mask = False), # numpy HWC image is converted to pytorch CHW tensor
+                                ToTensorV2(transpose_mask = False), # numpy HWC image is converted to pytorch CHW tensor and HW to 1HW
+                                
                         ],
                         additional_targets={'label': 'image'}
                 )
@@ -42,34 +45,41 @@ class IDDDataModule(LightningDataModule):
         train_transform_image = A.Compose(
                         transforms=[                      
                                 A.RandomBrightnessContrast(p=0.2),
-                                A.GaussianBlur(blur_limit=3),
+                                A.OneOf(
+                                    [
+                                        A.MotionBlur(blur_limit=3, p=1),
+                                        A.GaussianBlur(blur_limit=3, p=1),
+                                    ], p=0.5
+                                ),
+                                A.Perspective(p=0.5),
                                 A.GaussNoise(p=0.5),
                                 A.Sharpen(p=0.5),
-                                A.RandomSunFlare(),
+                                # A.RandomSunFlare(),
                                 A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
                                 #Mean and std from ImageNet as they transfer reasonably
                                 ]
                 )
        
 
-        test_transform = transforms.Compose([
+        # test_transform = transforms.Compose([
+        # #     transforms.Resize(size=(640,640)),
+        #     transforms.ToTensor(),
+        #     # Converts a PIL Image or numpy.ndarray (H x W x C) in the range [0, 255] to 
+        #     # a torch.FloatTensor of shape (C x H x W) in the range [0.0, 1.0]
+        #     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        # ])
+        
+        val_transform = test_transform = transforms.Compose([
         #     transforms.Resize(size=(640,640)),
             transforms.ToTensor(),
-            # Converts a PIL Image or numpy.ndarray (H x W x C) in the range [0, 255] to 
-            # a torch.FloatTensor of shape (C x H x W) in the range [0.0, 1.0]
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
         ])
         
-        val_transform = transforms.Compose([
-        #     transforms.Resize(size=(640,640)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        ])
         
-        self.train_dataset = IDDataset(self.train_images_path, transform=train_transform_image, image_label_transform=train_transform_image_and_label) \
+        self.train_dataset = IDDataset(self.train_images_path, transform=None, image_label_transform=None) \
                                  if self.train_images_path else None
-        self.val_dataset = IDDataset(self.val_images_path, transform=val_transform)if self.val_images_path else None
-        self.test_dataset = IDDataset(self.test_images_path,transform=test_transform)if self.test_images_path else None
+        self.val_dataset = IDDataset(self.val_images_path, transform=None)if self.val_images_path else None
+        self.test_dataset = IDDataset(self.test_images_path,transform=None, return_file_paths=True, load_labels=False)if self.test_images_path else None
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset, batch_size=self.batch_size, num_workers=self.num_workers, drop_last=True, shuffle=True)
@@ -89,8 +99,18 @@ class IDDDataModule(LightningDataModule):
 
 if __name__ == '__main__':
     idd_datamodule =  IDDDataModule('../idd20k_lite/leftImg8bit/train/*/*_image.jpg', '../idd20k_lite/leftImg8bit/val/*/*_image.jpg', 
-                                    '../idd20k_lite/leftImg8bit/test/*/*_image.jpg', batch_size=8)
+                                    batch_size=256)
     idd_datamodule.setup()
     train_dl = idd_datamodule.train_dataloader()
     a = next(iter(train_dl))
-    print(a[0].shape, a[1].shape)
+    import numpy as np
+    print(a[0].shape, a[1].shape, np.unique(a[1]))
+
+    # test_dl = idd_datamodule.test_dataloader()
+    # a = next(iter(test_dl))
+    # print(a[0].shape, a[1].shape)
+    
+    val_dl = idd_datamodule.val_dataloader()
+    b = next(iter(val_dl))
+    print(b[0].shape, b[1].shape)
+    

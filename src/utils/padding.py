@@ -1,3 +1,5 @@
+import torch.nn.functional as F
+
 def pad_to(x, stride):
     # Padding for U-net style models which require input shape to be divisible by 2 at least a certain number of times
     h, w = x.shape[-2:]

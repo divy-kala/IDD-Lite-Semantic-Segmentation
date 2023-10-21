@@ -1,8 +1,13 @@
 matplotlib
 numpy
-opencv_python
+opencv-python
 albumentations
-torch
-torchvision
+# torch
+# torchvision
 pillow
 pytorch-lightning
+
+# conda install python=3.10 pytorch=1.13 cudatoolkit=11.6 cudnn=8.3.2.44 torchvision pytorch-cuda matplotlib numpy opencv pillow pytorch-lightning -c pytorch -c conda-forge -c nvidia --solver=libmamba
+# conda install 
+
+conda install python=3.10 pytorch cudatoolkit cudnn torchvision pytorch-cuda matplotlib numpy opencv pillow pytorch-lightning -c pytorch -c conda-forge -c nvidia --solver=libmamba

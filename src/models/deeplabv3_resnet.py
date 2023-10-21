@@ -9,15 +9,19 @@ from torch.optim import SGD, Adam
 import torch
 import pytorch_lightning as pl
 import torchvision.models as models
+from torchvision.models.segmentation.deeplabv3 import DeepLabHead
+import PIL.Image as Image
+# from focal_loss import sparse_categorical_focal_loss 
 
 from src.utils.padding import pad_to, unpad
 from src.utils.loss import DiceLoss
 
-class Net(pl.LightningModule):
+
+class DeepnetLabV3_ResNet(pl.LightningModule):
 
     def __init__(self, nc=3, no_classes=8, filters=64, model_hparams=None) :
         # model_hparams - Hyperparameters for the model, as dictionary.
-        super(Net, self).__init__()
+        super(DeepnetLabV3_ResNet, self).__init__()
         self.save_hyperparameters()
         self.test_step_outputs = {'loss':[], 'predicted labels':[], 'true labels':[]}        
 
@@ -26,76 +30,27 @@ class Net(pl.LightningModule):
         ndf = filters  # Number of encoder filters
         ngf = filters  # Number of decoder filters  
 
-        self.loss_module1 =  nn.CrossEntropyLoss() 
-        self.loss_module2 = DiceLoss()
-        
+        weights = [0.39, 5.21, 7.76, 1.46, 1.05, 0.53, 0.62, 0 ] #595.24] # 1/(no_classes * class_prob_in_gt)
+        weights = torch.tensor(weights)
+
+
+        self.loss_module =  nn.CrossEntropyLoss(weight=weights) 
+        # self.loss_module = lambda x,y: sparse_categorical_focal_loss(x,y, axis=1, gamma=2)
+        # self.loss_module = DiceLoss()
+
         self.softmax = torch.nn.Softmax(dim=1)
-
-        self.enc1 = nn.Sequential(
-            nn.Conv2d(nc, ndf, 3, 2, bias=False, padding=1),
-            nn.BatchNorm2d(ndf),
-            nn.LeakyReLU(0.2, inplace=True),
-
-        )
-        self.enc2 = nn.Sequential(
-            nn.Conv2d(ndf, ndf * 2, 3, 2, bias=False, padding=1),
-            nn.BatchNorm2d(ndf * 2),
-            nn.LeakyReLU(0.2, inplace=True)
-        )
-        self.enc3 = nn.Sequential(
-            nn.Conv2d(ndf * 2, ndf * 4, 3, 2, bias=False, padding=1),
-            nn.BatchNorm2d(ndf * 4),
-            nn.LeakyReLU(0.2, inplace=True)
-        )
-        self.enc4 = nn.Sequential(
-            nn.Conv2d(ndf * 4, ndf * 8, 3, 2, bias=False, padding=1),
-            nn.BatchNorm2d(ndf * 8),
-            nn.LeakyReLU(0.2, inplace=True)
-        )
+    
+        self.model = models.segmentation.deeplabv3_resnet101(pretrained=True,
+                                                    progress=True)
+        self.model.classifier = DeepLabHead(2048, no_classes) # Mapping from 2028 dim feature space to no_classesxHxW space
         
-        # Decoder
-        self.dec1 = nn.Sequential(
-            # nn.ConvTranspose2d(ndf * 8, ngf * 8, 3, 1, bias=False, padding=0),
-            # nn.ReLU(True),
-            nn.ConvTranspose2d(ngf * 8, ngf * 4, 3, 2, bias=False, padding=1, output_padding=1),
-            nn.ReLU(True)
-        )
-        self.dec2 = nn.Sequential(
-            nn.ConvTranspose2d(ngf * 8, ngf * 2, 3, 2, bias=False, padding=1, output_padding=1),
-            nn.ReLU(True)
-        )
-        self.dec3 = nn.Sequential(
-            nn.ConvTranspose2d(ngf * 4, ngf, 3, 2, bias=False, padding=1, output_padding=1),
-            nn.ReLU(True)
-        )
-        self.final = nn.Sequential(
-            nn.ConvTranspose2d(ngf*2, ngf, 3, 2, bias=False, padding=1, output_padding=1),
-            nn.ConvTranspose2d(ngf, no_classes, 3, 1, bias=False, padding=1),
-        )
-        
-         
         
     def forward(self, imgs):
         # Pad so U-Net concatenation works
         # x, pads = pad_to(imgs,16)    
         x = imgs
 
-        # Encode
-        enc1 = self.enc1(x)
-        enc2 = self.enc2(enc1)
-        enc3 = self.enc3(enc2)
-        enc4 = self.enc4(enc3)
-
-        # Decode with skip connections
-        dec1 = self.dec1(enc4)
-        dec2 = self.dec2(torch.cat([dec1, enc3], 1))
-        dec3 = self.dec3(torch.cat([dec2, enc2], 1))
-        output = self.final(torch.cat([dec3, enc1], 1))
-        
-
-        # dec2 = dec1 + enc3
-        # dec3 = dec2 + enc2
-        # output = dec3 + enc1
+        output = self.model(x)['out']
 
         # Unpad before outputting
         # output = unpad(output, pads)
@@ -111,9 +66,8 @@ class Net(pl.LightningModule):
         imgs, seg_map = batch
         out = self(imgs)
 
-        loss1 = self.loss_module1(out, seg_map)
-        loss2 = self.loss_module2(out, seg_map)
-        loss = loss1 + loss2
+        loss = self.loss_module(out, seg_map)
+        # loss = np.sum(self.loss_module(seg_map.cpu(), out.cpu()))
         self.log('train_loss', loss) #, sync_dist=True, )
         return loss
 
@@ -128,11 +82,9 @@ class Net(pl.LightningModule):
 
         accuracy = (predictions == seg_map).to(torch.float).mean()
         seg_map = seg_map.squeeze(1) #TODO: Might as well not load it from dataloader in 8,1,227,320 form, but 8,227,320 form
-        
-        loss1 = self.loss_module1(out, seg_map)
-        loss2 = self.loss_module2(out, seg_map)
-        loss = loss1 + loss2
-        
+        loss = self.loss_module(out, seg_map)
+        # loss = np.sum(self.loss_module(seg_map.cpu(), out.cpu()))
+
         self.log("val_acc", accuracy, prog_bar=True, sync_dist=True)
         self.log('val_loss', loss, prog_bar=True, sync_dist=True)
 
@@ -152,11 +104,25 @@ class Net(pl.LightningModule):
 
 
     def predict_step(self, batch, batch_idx):
-        imgs = batch
+        if isinstance(batch, list):
+            imgs, img_paths = batch
+        else: imgs = batch
         out = self(imgs)
         predictions = self.softmax(out)
-        predictions = np.argmax(predictions, axis=1)
-        predictions = predictions[:, np.newaxis, :, :] #TODO: remove if labels only have 3 dims
+        predictions = np.argmax(predictions.cpu().numpy(), axis=1)
+  
+
+        for path in img_paths:
+            dir_name = os.path.basename(os.path.dirname(path))
+            file_name = os.path.basename(path).replace('_image.jpg', '_label.png')
+            dst_dir = os.path.join('preds', dir_name)
+            os.makedirs(dst_dir, exist_ok=True)
+            full_path = os.path.join(dst_dir, file_name)
+            img = Image.fromarray(predictions[0].astype('uint8'))
+            img.save(full_path)
+
+        # predictions = predictions[:, np.newaxis, :, :] #TODO: remove if labels only have 3 dims
+
         return predictions
 
     def predict(self, imgs):
